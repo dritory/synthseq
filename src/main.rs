@@ -12,14 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(target_os = "macos")]
-extern crate coreaudio;
-#[cfg(target_os = "macos")]
-extern crate coremidi;
-
-#[cfg(not(target_os = "macos"))]
 extern crate cpal;
-#[cfg(not(target_os = "macos"))]
 extern crate midir;
 
 extern crate time;
@@ -29,15 +22,14 @@ extern crate synthesizer_io_core;
 mod engine;
 mod midi;
 mod note;
+mod sequencer;
+mod config;
+mod serial;
 
-
-#[cfg(not(target_os = "macos"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleRate;
 
-#[cfg(not(target_os = "macos"))]
 use midir::MidiInput;
-#[cfg(not(target_os = "macos"))]
 
 use synthesizer_io_core::modules;
 
@@ -50,35 +42,71 @@ use std::error::Error;
 use std::sync::{Arc, Mutex};
 use std::io::{stdin, stdout, Write};
 
-
+use time::{Duration, Instant};
 use engine::Engine;
 use midi::Midi;
 use note::NoteModule;
-
-const MAX_NODES : usize = 255;
-
-const VOICE_COUNT : usize = 16;
-const CHANNEL_COUNT : usize = 8;
-const CHANNELS: i32 = 2;
-const SAMPLE_HZ: f32 = 48000.0;
+use sequencer::Sequencer;
 
 fn main() {
     let (worker, tx, rx) = Worker::create(4096);
 
-    let mut engine = Engine::new(SAMPLE_HZ, rx, tx);
-    engine.init_polysynth(CHANNEL_COUNT, VOICE_COUNT);
+    let mut engine = Engine::new(config::SAMPLE_HZ, rx, tx);
+    engine.init_polysynth();
     let engine = Arc::new(Mutex::new(engine));
 
-    let mut note_module = NoteModule::new(VOICE_COUNT);
+    let mut note_module = NoteModule::new();
     let note_module = Arc::new(Mutex::new(note_module));
-    
+    let note_module_cl = note_module.clone();
+    let engine_cl = engine.clone();
     std::thread::spawn(move || {
         run_midi(note_module, engine);
+    }); 
+
+    std::thread::spawn(move || { 
+        run_sequencer(note_module_cl, engine_cl);
     }); 
 
     run_cpal(worker);
 }
 
+
+fn run_sequencer ( note_module : Arc<Mutex<NoteModule>>, engine : Arc<Mutex<Engine>>){
+
+    for c in 0..config::CHANNEL_COUNT {
+        std::thread::spawn(move || {
+            let sequencer = Sequencer::new(c, 60.0, 8);
+            let mutx = Arc::new(Mutex::new(sequencer));
+            let mut current_time = Instant::now();
+            let mut tick = false;
+            let mut residue : i128 = 0;
+            let mut cum_error = 0;
+            loop{
+                let elapsed_time = current_time.elapsed().whole_microseconds();
+                let sequencer = &mutx.lock().unwrap();
+                let microseconds = ((30.0 / (sequencer.get_bpm()))*1000_000.0) as i128;
+                if elapsed_time >= microseconds - residue{
+                    
+                    residue = elapsed_time - microseconds + residue;
+                    println!("{:?} {:?}",residue, elapsed_time);
+                    if tick {
+                        
+                    }else{
+                        println!("err{:?}",cum_error);
+                    }
+                    tick = !tick;
+                    current_time = Instant::now();
+                    cum_error = cum_error + elapsed_time - microseconds;
+                    std::thread::sleep(std::time::Duration::from_micros((microseconds as f32 * 0.9 ) as u64));
+                }
+            
+            }
+        });
+    }
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(10000));
+    }
+}
 
 fn run_midi( note_module : Arc<Mutex<NoteModule>>, engine : Arc<Mutex<Engine>>){
     // midi setup
@@ -128,7 +156,6 @@ fn run_midi( note_module : Arc<Mutex<NoteModule>>, engine : Arc<Mutex<Engine>>){
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn run_cpal(mut worker: Worker) {
     let host = cpal::default_host();
     let device = host
@@ -140,7 +167,7 @@ fn run_cpal(mut worker: Worker) {
     let supported_config = supported_configs_range
         .next()
         .expect("no supported config?!")
-        .with_sample_rate(SampleRate(SAMPLE_HZ as u32));
+        .with_sample_rate(SampleRate(config::SAMPLE_HZ as u32));
 
     let config = supported_config.into();
     println!("Format: {:?}",config);

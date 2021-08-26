@@ -15,6 +15,7 @@
 //! Interface for the audio engine.
 
 use time;
+use crate::config;
 
 use synthesizer_io_core::graph::{IntoBoxedSlice, Message, Node, Note, SetParam};
 use synthesizer_io_core::id_allocator::IdAllocator;
@@ -30,7 +31,8 @@ use synthesizer_io_core::queue::{Receiver, Sender};
 pub struct Engine {
     core: Core,
     current_channel : usize,
-    control_maps: Vec<ControlMap>,
+    max_channels : usize,
+    control_maps: [Option<ControlMap>; config::CHANNEL_COUNT],
 }
 
 /// Type used to identify nodes in the external interface (not to be confused
@@ -55,6 +57,7 @@ struct Core {
     monitor_queues: Option<MonitorQueues>,
 }
 
+
 #[derive(Clone)]
 pub struct ControlMap {
     pub cutoff: usize,
@@ -68,8 +71,10 @@ pub struct ControlMap {
     // node number of node that can be replaced to inject more audio
     pub ext: usize,
 
-    pub note_receivers: Vec<Vec<usize>>,
+    pub note_receivers: [Vec<usize>; config::VOICE_COUNT],
 }
+const NONE_VEC_USIZE: Vec<usize> = vec![];
+const NONE_CONTROL_MAP: Option<ControlMap> = None;
 
 struct MonitorQueues {
     rx: Receiver<Vec<f32>>,
@@ -85,37 +90,39 @@ impl Engine {
         Engine {
             core: core,
             current_channel: 0,
-            control_maps: vec![],
+            max_channels : 1,
+            control_maps: [NONE_CONTROL_MAP; config::CHANNEL_COUNT],
         }
     }
 
     /// Initialize the engine with a simple mono synth.
-    pub fn init_monosynth(&mut self, channel_count: usize) {
-        for c in 0..channel_count{
+    pub fn init_monosynth(&mut self) {
+        self.max_channels = config::CHANNEL_COUNT;
+        for c in 0..config::CHANNEL_COUNT{
             let mut control_map = self.core.init_controls();
             let (control_map, _) = self.core.init_monosynth(0, control_map);
-            self.control_maps.push(control_map);
+            self.control_maps[c] = Some(control_map);
         }
     }
     /// Initialize the engine with a simple mono synth.
-    pub fn init_polysynth(&mut self, channel_count: usize, voice_count: usize) {
+    pub fn init_polysynth(&mut self) {
         
-        let mut ch_outputs: Vec<usize> = vec![];
-
-        for c in 0..channel_count {
-            let mut voice_outputs: Vec<usize> = vec![];
+        let mut ch_outputs: [usize;config::CHANNEL_COUNT] = [0;config::CHANNEL_COUNT];
+        self.max_channels = config::CHANNEL_COUNT;
+        for c in 0..config::CHANNEL_COUNT {
+            let mut voice_outputs: [usize;config::VOICE_COUNT] = [0;config::VOICE_COUNT];
             let mut control_map = self.core.init_controls();
 
-            for v in 0..voice_count {
+            for v in 0..config::VOICE_COUNT {
                 let (c, o) = self.core.init_monosynth(v, control_map);
                 control_map = c;
-                voice_outputs.push(o);
+                voice_outputs[v] = o;
             }
             let id = self.core.id_alloc.alloc();
             self.core.update_sum_node(id, &voice_outputs);
 
-            ch_outputs.push(id);
-            self.control_maps.push(control_map);
+            ch_outputs[c] = id;
+            self.control_maps[c] = Some(control_map);
         }
         self.core.update_sum_node(0, &ch_outputs);
     }
@@ -150,9 +157,38 @@ impl Engine {
         self.core.update_sum_node(0, outputs);
     }
 
-    pub fn get_control_map(&self) -> ControlMap {
-        self.control_maps[self.current_channel].clone()
+    pub fn get_current_control_map(&self) -> ControlMap {
+        let control_map = self.control_maps[self.current_channel].as_ref().unwrap().clone();
+        control_map
     }
+
+    pub fn get_control_map(&self, channel: usize) -> ControlMap {
+        let control_map = self.control_maps[channel].as_ref().unwrap().clone();
+        control_map
+    }
+
+    pub fn get_current_channel(&self) -> usize {
+        self.current_channel
+    }
+
+    pub fn set_current_channel(&mut self, channel: usize){
+        if channel < self.max_channels {
+            self.current_channel = channel;
+        }
+    }
+    pub fn set_ctrl_const(&mut self, value: f32, lo: f32, hi: f32, ix: usize,
+        ts: u64)
+    {
+        let value = lo + value * (hi - lo);
+        let param = SetParam {
+            ix: ix,
+            param_ix: 0,
+            val: value,
+            timestamp: ts,
+        };
+        self.send(Message::SetParam(param));
+    }
+
 }
 
 impl Core {
@@ -204,7 +240,7 @@ impl Core {
             sustain,
             release,
             ext,
-            note_receivers: vec![],
+            note_receivers: [NONE_VEC_USIZE; config::VOICE_COUNT],
         }
     }
 
@@ -247,8 +283,6 @@ impl Core {
         let (monitor, tx, rx) = modules::Monitor::new();
         self.monitor_queues = Some(MonitorQueues { tx, rx });
         let monitor = self.create_node(monitor, [(monitor_in, 0)], []);
-
-        control_map.note_receivers.push(vec![]);
 
         control_map.note_receivers[voice_number].push(note_pitch);
         control_map.note_receivers[voice_number].push(adsr);

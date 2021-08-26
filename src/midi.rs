@@ -29,7 +29,10 @@ impl Midi {
 
     pub fn dispatch_midi(&mut self, note_module : &mut NoteModule, engine: &mut Engine, data: &[u8], ts: u64) {
         let mut i = 0;
-        let control_map : ControlMap = engine.get_control_map();
+        let channel = engine.get_current_channel();
+        let control_map : ControlMap = engine.get_current_control_map();
+
+
         while i < data.len() {
             println!("{},{},{}", data[i], data[i + 1], data[i + 2]);
             if data[i] == 0xb0 {
@@ -71,7 +74,7 @@ impl Midi {
                 let on = data[i] == 0x90 && velocity > 0.0;
                 let note_event = NoteEvent{down: on, note : midi_num, velocity : velocity, timestamp: ts};
 
-                note_module.note_event(engine, note_event);
+                note_module.note_event(engine, note_event, channel);
                 i += 3;
             } else {
                 println!("don't have handler for midi code {}", data[i]);
