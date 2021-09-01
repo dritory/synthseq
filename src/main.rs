@@ -39,13 +39,13 @@ use synthesizer_io_core::queue::Sender;
 use synthesizer_io_core::worker::Worker;
 use std::error::Error;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::io::{stdin, stdout, Write};
 
 use time::{Duration, Instant};
 use engine::Engine;
 use midi::Midi;
-use note::NoteModule;
+use note::{NoteModule, NoteEvent};
 use sequencer::Sequencer;
 
 fn main() {
@@ -55,7 +55,9 @@ fn main() {
     engine.init_polysynth();
     let engine = Arc::new(Mutex::new(engine));
 
-    let mut note_module = NoteModule::new();
+
+    let (note_ch_tx, note_ch_rx) = mpsc::channel::<NoteEvent>();
+    let mut note_module = NoteModule::new(note_ch_tx);
     let note_module = Arc::new(Mutex::new(note_module));
     let note_module_cl = note_module.clone();
     let engine_cl = engine.clone();
@@ -64,32 +66,39 @@ fn main() {
     }); 
 
     std::thread::spawn(move || { 
-        run_sequencer(note_module_cl, engine_cl);
+        run_sequencer(note_module_cl, engine_cl, note_ch_rx);
     }); 
 
     run_cpal(worker);
 }
 
 
-fn run_sequencer ( note_module : Arc<Mutex<NoteModule>>, engine : Arc<Mutex<Engine>>){
+fn run_sequencer ( note_module : Arc<Mutex<NoteModule>>, engine : Arc<Mutex<Engine>>, note_ch : mpsc::Receiver<NoteEvent>){
+
+    let mut sequencers : Vec<Arc<Mutex<Sequencer>>> = vec![];
+    for c in 0..config::CHANNEL_COUNT {
+        let sequencer = Sequencer::new(c, 120.0, 8);
+        let mutx = Arc::new(Mutex::new(sequencer));
+        sequencers.push(mutx);
+    }
 
     for c in 0..config::CHANNEL_COUNT {
         let mut engine_cl = engine.clone();
         let mut note_module_cl = note_module.clone();
-        std::thread::spawn(move || {
-            let sequencer = Sequencer::new(c, 60.0, 8);
-            let mutx = Arc::new(Mutex::new(sequencer));
+        let sequencer = sequencers[c].clone();
+        std::thread::spawn(move | | {
+            
             let mut current_time = Instant::now();
             let mut tick = false;
             let mut residue : i128 = 0;
             let mut cum_error = 0;
             loop{
                 let elapsed_time = current_time.elapsed().whole_microseconds();
-                let mut sequencer = mutx.lock().unwrap();
+                let mut sequencer = sequencer.lock().unwrap();
                 let microseconds = ((30.0 / (&sequencer.get_bpm()))*1000_000.0) as i128;
 
                 let mut note_module = note_module_cl.lock().unwrap();
-                sequencer.update_notes(&mut note_module);
+                
                 if elapsed_time >= microseconds - residue{
                     residue = elapsed_time - microseconds + residue;
                     println!("{:?} {:?}",residue, elapsed_time);
@@ -103,16 +112,23 @@ fn run_sequencer ( note_module : Arc<Mutex<NoteModule>>, engine : Arc<Mutex<Engi
                     tick = !tick;
                     current_time = Instant::now();
                     cum_error = cum_error + elapsed_time - microseconds;
-                    //std::thread::sleep(std::time::Duration::from_micros((microseconds as f32 * 0.1 ) as u64));
+                    std::thread::sleep(std::time::Duration::from_micros((microseconds as f32 * 0.1 ) as u64));
                 }
-
-                std::thread::sleep(std::time::Duration::from_micros(10));
+                //std::thread::sleep(std::time::Duration::from_micros(10));
             }
         });
     }
+    let engine_cl = engine.clone();
     loop {
-        
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        let note_event = note_ch.recv().unwrap();
+        {
+            let engine = engine_cl.lock().unwrap();
+            let current_channel : usize = engine.get_current_channel();
+            let mut sequencer = sequencers[current_channel].lock().unwrap();
+
+            sequencer.update_note(note_event);
+        }
+        std::thread::sleep(std::time::Duration::from_micros(10));
     }
 }
 
@@ -160,6 +176,7 @@ fn run_midi( note_module : Arc<Mutex<NoteModule>>, engine : Arc<Mutex<Engine>>){
         println!("error connecting to midi: {:?}", e);
     }
     loop {
+
         std::thread::sleep(std::time::Duration::from_millis(10000));
     }
 }

@@ -3,10 +3,9 @@ use crate::engine::Engine;
 use crate::note::{NoteEvent, NoteModule, NONE_NOTE};
 use synthesizer_io_core::graph::Message;
 
+const NONE_NOTES: Vec<NoteEvent> = vec![];
 
-const NONE_NOTES: [NoteEvent; config::VOICE_COUNT] = [NONE_NOTE; config::VOICE_COUNT];
-
-type Notes = [NoteEvent; config::VOICE_COUNT];
+type Notes = Vec<NoteEvent>;
 
 pub struct Sequencer {
     channel: usize,
@@ -33,50 +32,46 @@ impl Sequencer {
         }
     }
 
-    pub fn update_notes(&mut self, note_module: &NoteModule) {
-        let voices = note_module.get_voices(0);
+    pub fn update_note(&mut self, note_event : NoteEvent){
         let mut notes = &mut self.scheduled_notes;
-        for i in 0..voices.len() {
-            if voices[i].note.is_some() {
-                notes[i].note = voices[i].note.unwrap();
-                notes[i].down = true;
-                notes[i].velocity = voices[i].velocity;
-                notes[i].timestamp = voices[i].timestamp;
-            }
-        }
+        notes.push(note_event);
     }
 
     pub fn tick(&mut self, engine: &mut Engine, note_module: &mut NoteModule) {
+
+        // Turn off last notes
         for note in self.last_played_notes.iter() {
             let mut note = note.clone();
             note.down = false;
             note.velocity = 0.0;
             note_module.note_event(engine, note, self.channel);
         }
-        
+        self.last_played_notes = vec![];
+
+
         self.step();
         
-        let notes = &mut self.steps[self.current_step];
         
-        for i in 0..notes.len() {
-            note_module.note_event(engine, notes[i].clone(), self.channel);
-            self.last_played_notes[i].note = notes[i].note;
+        let notes = &mut self.steps[self.current_step];
+        for note in notes {
+            note_module.note_event(engine, note.clone(), self.channel);
+
+            self.last_played_notes.push(note.clone())
         }
     }
 
     pub fn tock (&mut self, engine: &mut Engine, note_module: &mut NoteModule) {
-        let mut add_voices = false;
-        for i in 0..self.scheduled_notes.len(){
-            if self.scheduled_notes[i].down {
-                add_voices = true;
+
+        if self.scheduled_notes.len() > 0 {
+            self.steps[self.current_step] = vec![];
+            
+            let mut notes = &mut self.steps[self.current_step];
+
+            for i in 0..self.scheduled_notes.len() {
+                notes.push(self.scheduled_notes[i].clone());
+                
             }
-        }
-        let notes = &mut self.steps[self.current_step];
-        for i in 0..self.scheduled_notes.len() {
-            if add_voices {
-                notes[i] = self.scheduled_notes[i].clone();
-                self.scheduled_notes[i].down = false;
-            }
+            self.scheduled_notes = vec![];
         }
     }
 
