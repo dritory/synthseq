@@ -74,6 +74,8 @@ fn main() {
 fn run_sequencer ( note_module : Arc<Mutex<NoteModule>>, engine : Arc<Mutex<Engine>>){
 
     for c in 0..config::CHANNEL_COUNT {
+        let mut engine_cl = engine.clone();
+        let mut note_module_cl = note_module.clone();
         std::thread::spawn(move || {
             let sequencer = Sequencer::new(c, 60.0, 8);
             let mutx = Arc::new(Mutex::new(sequencer));
@@ -83,28 +85,34 @@ fn run_sequencer ( note_module : Arc<Mutex<NoteModule>>, engine : Arc<Mutex<Engi
             let mut cum_error = 0;
             loop{
                 let elapsed_time = current_time.elapsed().whole_microseconds();
-                let sequencer = &mutx.lock().unwrap();
-                let microseconds = ((30.0 / (sequencer.get_bpm()))*1000_000.0) as i128;
+                let mut sequencer = mutx.lock().unwrap();
+                let microseconds = ((30.0 / (&sequencer.get_bpm()))*1000_000.0) as i128;
+
+                let mut note_module = note_module_cl.lock().unwrap();
+                sequencer.update_notes(&mut note_module);
                 if elapsed_time >= microseconds - residue{
-                    
                     residue = elapsed_time - microseconds + residue;
                     println!("{:?} {:?}",residue, elapsed_time);
+                    let mut engine = engine_cl.lock().unwrap();
+                    
                     if tick {
-                        
+                        sequencer.tick(&mut engine, &mut note_module);
                     }else{
-                        println!("err{:?}",cum_error);
+                        sequencer.tock(&mut engine, &mut note_module);
                     }
                     tick = !tick;
                     current_time = Instant::now();
                     cum_error = cum_error + elapsed_time - microseconds;
-                    std::thread::sleep(std::time::Duration::from_micros((microseconds as f32 * 0.9 ) as u64));
+                    //std::thread::sleep(std::time::Duration::from_micros((microseconds as f32 * 0.1 ) as u64));
                 }
-            
+
+                std::thread::sleep(std::time::Duration::from_micros(10));
             }
         });
     }
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(10000));
+        
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 
