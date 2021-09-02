@@ -6,14 +6,14 @@ use synthesizer_io_core::graph::{Message, Note};
 
 pub struct NoteModule {
     voices: [Voices; config::CHANNEL_COUNT],
-    note_ch_tx : mpsc::Sender::<NoteEvent>
+    //note_ch_tx : mpsc::Sender::<NoteEvent>
 }
 
 impl NoteModule {
-    pub fn new(note_ch_tx : mpsc::Sender::<NoteEvent>) -> NoteModule {
+    pub fn new() -> NoteModule {
         NoteModule {
             voices: [NONE_VOICES; config::CHANNEL_COUNT],
-            note_ch_tx: note_ch_tx
+            //note_ch_tx: note_ch_tx
         }
     }
 
@@ -79,7 +79,7 @@ impl NoteModule {
             timestamp: ts,
         };
         engine.send(Message::Note(note));
-        self.note_ch_tx.send(note_event).unwrap_or_else(|err| println!("{:?}", err));
+        //self.note_ch_tx.send(note_event).unwrap_or_else(|err| println!("{:?}", err));
     }
 
 
